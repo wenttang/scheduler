@@ -1,15 +1,12 @@
-package main
+package scheduler
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
-	"net/http"
 
 	"github.com/dapr/go-sdk/actor"
 	dapr "github.com/dapr/go-sdk/client"
-	daprd "github.com/dapr/go-sdk/service/http"
 	workflowActor "github.com/wenttang/workflow/pkg/actor"
 	corev1 "k8s.io/api/core/v1"
 )
@@ -53,14 +50,17 @@ func (s *Scheduler) Register(ctx context.Context, req *workflowActor.RegisterReq
 		DueTime:   "5s",
 		Period:    "5s",
 		Data:      []byte(fmt.Sprintf(`"%s"`, name)),
-		CallBack:  "Next",
+		CallBack:  "Reconcile",
 	})
 	if err != nil {
 		return err
 	}
 
 	req.PipelineRun.Status.Status = corev1.ConditionUnknown
-	if err := s.GetStateManager().Set(name, req); err != nil {
+	if err := s.GetStateManager().Set(name, &Actuator{
+		Pipeline:    req.Pipeline,
+		PipelineRun: req.PipelineRun,
+	}); err != nil {
 		return err
 	}
 	fmt.Println("Regsiter actor timer")
@@ -68,28 +68,31 @@ func (s *Scheduler) Register(ctx context.Context, req *workflowActor.RegisterReq
 }
 
 func (s *Scheduler) Get(ctx context.Context, req *workflowActor.NamespacedName) (*workflowActor.Result, error) {
-	state := new(workflowActor.RegisterReq)
+	actuator := new(Actuator)
 	name := fmt.Sprintf("%s:%s", req.Namespace, req.Name)
-	err := s.GetStateManager().Get(name, state)
+	err := s.GetStateManager().Get(name, actuator)
 	if err != nil {
 		return &workflowActor.Result{}, err
 	}
 
 	return &workflowActor.Result{
-		Status: state.PipelineRun.Status.Status,
+		Status: actuator.PipelineRun.Status.Status,
 	}, nil
 }
 
-func (s *Scheduler) Next(ctx context.Context, name string) error {
-
-	fmt.Println("----------", name)
-	return nil
-}
-
-func main() {
-	s := daprd.NewService(":8090")
-	s.RegisterActorImplFactory(New)
-	if err := s.Start(); err != nil && err != http.ErrServerClosed {
-		log.Fatalf("error listenning: %v", err)
+func (s *Scheduler) Reconcile(ctx context.Context, name string) error {
+	// TODO: pipeline params
+	actuator := new(Actuator)
+	err := s.GetStateManager().Get(name, actuator)
+	if err != nil {
+		return err
 	}
+
+	err = actuator.Reconcile(ctx)
+	if err != nil {
+		return err
+	}
+
+	// TODO:
+	return nil
 }
