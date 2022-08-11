@@ -14,13 +14,14 @@ func main() {
 }
 
 func Main() {
-	const defaultPort = ":8090"
+	const defaultPort = ":8000"
 	port := os.Getenv("SCHEDULER_PORT")
 	if port == "" {
 		port = defaultPort
 	}
 	s := daprd.NewService(port)
 	s.RegisterActorImplFactory(scheduler.New)
+
 	if err := s.Start(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("error listenning: %v", err)
 	}

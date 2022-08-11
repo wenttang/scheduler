@@ -4,14 +4,39 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 
+	dapr "github.com/dapr/go-sdk/client"
+	schedulerActor "github.com/wenttang/scheduler/pkg/actor"
 	"github.com/wenttang/workflow/pkg/apis/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 type Actuator struct {
-	Pipeline    *v1alpha1.Pipepline
-	PipelineRun *v1alpha1.PipeplineRun
+	sync.Mutex
+	Pipeline    *v1alpha1.Pipepline    `json:"pipeline,omitempty"`
+	PipelineRun *v1alpha1.PipeplineRun `json:"pipeline_run,omitempty"`
+
+	dapr   dapr.Client
+	actors map[string]*schedulerActor.ClientStub
+}
+
+func (a *Actuator) getActor(_t string) *schedulerActor.ClientStub {
+	a.Lock()
+	defer a.Unlock()
+	if a.actors == nil {
+		a.actors = make(map[string]*schedulerActor.ClientStub)
+	}
+
+	actor, ok := a.actors[_t]
+	if ok {
+		return actor
+	}
+
+	actor = schedulerActor.New(a.dapr, "scheduler", _t)
+	a.actors[_t] = actor
+	return actor
 }
 
 func (a *Actuator) Reconcile(ctx context.Context) error {
@@ -22,29 +47,86 @@ func (a *Actuator) Reconcile(ctx context.Context) error {
 	}
 
 	if !task.isStarted() {
+		now := metav1.Now()
+		task.taskRun.StartTime = &now
 		task.parseParams(a.PipelineRun.Spec.Params)
+		state := corev1.ConditionUnknown
+		task.taskRun.Status = &state
 	}
 
-	// TODO:
+	actor := a.getActor(task.task.Actor.Type)
 
+	resp, err := actor.ReconcileTask(ctx, &schedulerActor.ReconcileTaskReq{
+		Params: task.task.Params,
+	})
+	if err != nil {
+		fmt.Println(err.Error())
+		return err
+	}
+
+	var state corev1.ConditionStatus
+	switch resp.Status {
+	case schedulerActor.Running:
+		state = corev1.ConditionUnknown
+	case schedulerActor.True:
+		state = corev1.ConditionTrue
+		now := metav1.Now()
+		task.taskRun.CompletionTime = &now
+	default:
+		state = corev1.ConditionFalse
+	}
+
+	task.taskRun.Status = &state
+	return nil
+}
+
+func (a *Actuator) ParseParams() error {
+	var getParams = func(params []v1alpha1.Param, name string) *v1alpha1.Param {
+		for _, param := range params {
+			if param.Name == name {
+				return &param
+			}
+		}
+		return nil
+	}
+
+	result := make([]v1alpha1.Param, 0, len(a.Pipeline.Spec.Params))
+	for _, paramSpec := range a.Pipeline.Spec.Params {
+		param := getParams(a.PipelineRun.Spec.Params, paramSpec.Name)
+		if param == nil {
+			if paramSpec.Default == nil {
+				return fmt.Errorf("%s is required", param.Name)
+			}
+			param = &v1alpha1.Param{
+				Name:  paramSpec.Name,
+				Value: paramSpec.Default,
+			}
+		}
+		result = append(result, *param)
+	}
+
+	a.PipelineRun.Spec.Params = result
 	return nil
 }
 
 func (a *Actuator) getTask() *task {
 	l := len(a.PipelineRun.Status.TaskRun)
 	if l == 0 {
+		a.PipelineRun.Status.TaskRun = []*v1alpha1.TaskStatus{{}}
 		return &task{
-			task: a.Pipeline.Spec.Tasks[0],
+			task:    a.Pipeline.Spec.Tasks[0],
+			taskRun: a.PipelineRun.Status.TaskRun[0],
 		}
 	}
 
-	taskRun := a.PipelineRun.Status.TaskRun[l-1]
+	l--
+	taskRun := a.PipelineRun.Status.TaskRun[l]
 	if *taskRun.Status == corev1.ConditionFalse ||
 		*taskRun.Status == corev1.ConditionTrue {
 		l += 1
+		a.PipelineRun.Status.TaskRun = append(a.PipelineRun.Status.TaskRun, &v1alpha1.TaskStatus{})
 	}
 
-	l--
 	if l == len(a.Pipeline.Spec.Tasks) {
 		// All task has finish.
 		return nil
@@ -62,7 +144,7 @@ type task struct {
 }
 
 func (t *task) isStarted() bool {
-	return t.taskRun.Status != nil
+	return t.taskRun.Status != nil && *t.taskRun.Status != ""
 }
 
 func (t *task) parseParams(params []v1alpha1.Param) error {
@@ -75,7 +157,7 @@ func (t *task) parseParams(params []v1alpha1.Param) error {
 		return nil
 	}
 
-	for _, param := range t.task.Params {
+	for i, param := range t.task.Params {
 		if !strings.HasPrefix(*param.Value, "$(params.") {
 			continue
 		}
@@ -86,7 +168,7 @@ func (t *task) parseParams(params []v1alpha1.Param) error {
 		if value == nil {
 			return fmt.Errorf("can not get the value of %s", *param.Value)
 		}
-		param.Value = value
+		t.task.Params[i].Value = value
 	}
 	return nil
 }

@@ -7,6 +7,7 @@ import (
 
 	"github.com/dapr/go-sdk/actor"
 	dapr "github.com/dapr/go-sdk/client"
+	schedulerActor "github.com/wenttang/scheduler/pkg/actor"
 	workflowActor "github.com/wenttang/workflow/pkg/actor"
 	corev1 "k8s.io/api/core/v1"
 )
@@ -17,10 +18,11 @@ type Scheduler struct {
 }
 
 func New() actor.Server {
-	client, err := dapr.NewClient()
+	client, err := schedulerActor.NewDapr()
 	if err != nil {
 		panic(err)
 	}
+
 	return &Scheduler{
 		daprClient: client,
 	}
@@ -36,31 +38,38 @@ func (s *Scheduler) Register(ctx context.Context, req *workflowActor.RegisterReq
 	}
 
 	name := fmt.Sprintf("%s:%s", req.PipelineRun.Namespace, req.PipelineRun.Name)
-
 	if exist, err := s.GetStateManager().Contains(name); err != nil {
 		return err
 	} else if exist {
 		return errors.New("already exists")
 	}
 
-	err := s.daprClient.RegisterActorTimer(ctx, &dapr.RegisterActorTimerRequest{
+	actuator := &Actuator{
+		dapr:        s.daprClient,
+		Pipeline:    req.Pipeline,
+		PipelineRun: req.PipelineRun,
+	}
+
+	err := actuator.ParseParams()
+	if err != nil {
+		return err
+	}
+
+	err = s.daprClient.RegisterActorReminder(ctx, &dapr.RegisterActorReminderRequest{
 		ActorType: s.Type(),
 		ActorID:   s.ID(),
 		Name:      name,
-		DueTime:   "5s",
-		Period:    "5s",
+		DueTime:   "30s",
+		Period:    "30s",
 		Data:      []byte(fmt.Sprintf(`"%s"`, name)),
-		CallBack:  "Reconcile",
+		// CallBack:  "Reconcile",
 	})
 	if err != nil {
 		return err
 	}
 
 	req.PipelineRun.Status.Status = corev1.ConditionUnknown
-	if err := s.GetStateManager().Set(name, &Actuator{
-		Pipeline:    req.Pipeline,
-		PipelineRun: req.PipelineRun,
-	}); err != nil {
+	if err := s.GetStateManager().Set(name, actuator); err != nil {
 		return err
 	}
 	fmt.Println("Regsiter actor timer")
@@ -75,17 +84,32 @@ func (s *Scheduler) Get(ctx context.Context, req *workflowActor.NamespacedName) 
 		return &workflowActor.Result{}, err
 	}
 
+	if actuator.PipelineRun == nil {
+		return &workflowActor.Result{}, errors.New("not exists")
+	}
+
 	return &workflowActor.Result{
 		Status: actuator.PipelineRun.Status.Status,
 	}, nil
 }
 
+func (s *Scheduler) ReminderCall(reminderName string, state []byte, dueTime string, period string) {
+	name := string(state)
+	ctx := context.Background()
+	s.Reconcile(ctx, name)
+
+	s.GetStateManager().Save()
+}
+
 func (s *Scheduler) Reconcile(ctx context.Context, name string) error {
-	// TODO: pipeline params
 	actuator := new(Actuator)
 	err := s.GetStateManager().Get(name, actuator)
 	if err != nil {
 		return err
+	}
+
+	if actuator.Pipeline == nil || actuator.PipelineRun == nil {
+		return nil
 	}
 
 	err = actuator.Reconcile(ctx)
@@ -93,6 +117,5 @@ func (s *Scheduler) Reconcile(ctx context.Context, name string) error {
 		return err
 	}
 
-	// TODO:
 	return nil
 }
