@@ -4,11 +4,15 @@ go 1.18
 
 require (
 	github.com/dapr/go-sdk v1.5.0
+	github.com/go-kit/log v0.2.0
 	github.com/wenttang/workflow v0.0.0-00010101000000-000000000000
+	k8s.io/api v0.24.2
+	k8s.io/apimachinery v0.24.2
 )
 
 require (
 	github.com/dapr/dapr v1.8.2 // indirect
+	github.com/go-logfmt/logfmt v0.5.1 // indirect
 	github.com/go-logr/logr v1.2.3 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/protobuf v1.5.2 // indirect
@@ -27,8 +31,6 @@ require (
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
-	k8s.io/api v0.24.2 // indirect
-	k8s.io/apimachinery v0.24.2 // indirect
 	k8s.io/klog/v2 v2.60.1 // indirect
 	k8s.io/utils v0.0.0-20220210201930-3a6ce19ff2f9 // indirect
 	sigs.k8s.io/controller-runtime v0.12.2 // indirect

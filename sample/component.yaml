@@ -3,12 +3,10 @@ kind: Component
 metadata:
   name: statestore
 spec:
-  type: state.redis
+  type: state.postgresql
   version: v1
   metadata:
-  - name: redisHost
-    value: 127.0.0.1:6379
-  - name: redisPassword
-    value: ""
+  - name: connectionString
+    value: host=127.0.0.1 user=went password=123456 port=5432 connect_timeout=10 database=scheduler
   - name: actorStateStore
     value: "true"

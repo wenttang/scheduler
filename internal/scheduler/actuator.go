@@ -4,9 +4,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"sync"
 
-	dapr "github.com/dapr/go-sdk/client"
+	"github.com/go-kit/log"
 	schedulerActor "github.com/wenttang/scheduler/pkg/actor"
 	"github.com/wenttang/workflow/pkg/apis/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
@@ -14,29 +13,13 @@ import (
 )
 
 type Actuator struct {
-	sync.Mutex
+	*ActorSet
+
+	Name        string
 	Pipeline    *v1alpha1.Pipepline    `json:"pipeline,omitempty"`
 	PipelineRun *v1alpha1.PipeplineRun `json:"pipeline_run,omitempty"`
 
-	dapr   dapr.Client
-	actors map[string]*schedulerActor.ClientStub
-}
-
-func (a *Actuator) getActor(_t string) *schedulerActor.ClientStub {
-	a.Lock()
-	defer a.Unlock()
-	if a.actors == nil {
-		a.actors = make(map[string]*schedulerActor.ClientStub)
-	}
-
-	actor, ok := a.actors[_t]
-	if ok {
-		return actor
-	}
-
-	actor = schedulerActor.New(a.dapr, "scheduler", _t)
-	a.actors[_t] = actor
-	return actor
+	logger log.Logger
 }
 
 func (a *Actuator) Reconcile(ctx context.Context) error {
