@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/go-kit/log"
+	"github.com/go-kit/log/level"
 	schedulerActor "github.com/wenttang/scheduler/pkg/actor"
 	"github.com/wenttang/workflow/pkg/apis/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
@@ -43,7 +44,7 @@ func (a *Actuator) Reconcile(ctx context.Context) error {
 		Params: task.task.Params,
 	})
 	if err != nil {
-		fmt.Println(err.Error())
+		level.Error(a.logger).Log("message", err.Error())
 		return err
 	}
 

@@ -2,7 +2,6 @@ package scheduler
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"github.com/dapr/go-sdk/actor"
@@ -11,6 +10,7 @@ import (
 	"github.com/go-kit/log/level"
 	schedulerActor "github.com/wenttang/scheduler/pkg/actor"
 	workflowActor "github.com/wenttang/workflow/pkg/actor"
+	"github.com/wenttang/workflow/pkg/apis/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -40,19 +40,17 @@ func (s *Scheduler) Type() string {
 	return "scheduler"
 }
 
-func (s *Scheduler) Register(ctx context.Context, req *workflowActor.RegisterReq) error {
+func (s *Scheduler) Register(ctx context.Context, req *workflowActor.RegisterReq) (*workflowActor.Result, error) {
 	if req.Pipeline == nil || req.PipelineRun == nil {
-		level.Info(s.logger).Log("message", "Failed get pipeline or pipelineRun")
-		return errors.New("invalid register")
+		return s.returnWithFailedMessage("Failed get pipeline or pipelineRun")
 	}
 
 	name := fmt.Sprintf("%s:%s", req.PipelineRun.Namespace, req.PipelineRun.Name)
 	if exist, err := s.GetStateManager().Contains(s.getStateName(name)); err != nil {
 		level.Info(s.logger).Log("message", err.Error())
-		return err
+		return s.returnWithFailedMessage(err.Error())
 	} else if exist {
-		level.Info(s.logger).Log("message", "Expecting to register, actually already exists", "name", name)
-		return errors.New("already exists")
+		return s.returnWithFailedMessage("Expecting to register, actually already exists")
 	}
 
 	actuator := &Actuator{
@@ -63,20 +61,17 @@ func (s *Scheduler) Register(ctx context.Context, req *workflowActor.RegisterReq
 
 	err := actuator.ParseParams()
 	if err != nil {
-		level.Info(s.logger).Log("message", err.Error(), "name", name)
-		return err
+		return s.returnWithFailedMessage(err.Error())
 	}
 
 	req.PipelineRun.Status.Status = corev1.ConditionUnknown
 	err = s.GetStateManager().Set(s.getStateName(name), actuator)
 	if err != nil {
-		level.Error(s.logger).Log("message", err.Error())
-		return err
+		return s.returnWithFailedMessage(err.Error())
 	}
 
 	if err := s.saveAndFlush(); err != nil {
-		level.Error(s.logger).Log("message", "Failed save state")
-		return err
+		return s.returnWithFailedMessage(err.Error())
 	}
 
 	err = s.daprClient.RegisterActorReminder(ctx, &dapr.RegisterActorReminderRequest{
@@ -88,29 +83,60 @@ func (s *Scheduler) Register(ctx context.Context, req *workflowActor.RegisterReq
 		Data:      []byte(name),
 	})
 	if err != nil {
-		level.Error(s.logger).Log("message", err.Error())
-		return err
+		return s.returnWithFailedMessage(err.Error())
 	}
 
 	level.Info(s.logger).Log("message", "Success", "name", name)
-	return nil
+	return &workflowActor.Result{}, nil
 }
 
-func (s *Scheduler) Get(ctx context.Context, req *workflowActor.NamespacedName) (*workflowActor.Result, error) {
+func (s *Scheduler) GetStatus(ctx context.Context, req *workflowActor.NamespacedName) (*workflowActor.Result, error) {
 	actuator := new(Actuator)
 	name := fmt.Sprintf("%s:%s", req.Namespace, req.Name)
-	err := s.GetStateManager().Get(name, actuator)
+
+	level.Info(s.logger).Log("message", "Get status", "name", name)
+	err := s.GetStateManager().Get(s.getStateName(name), actuator)
 	if err != nil {
-		return &workflowActor.Result{}, err
+		return s.returnWithFailedMessage(err.Error())
 	}
 
-	if actuator.PipelineRun == nil {
-		return &workflowActor.Result{}, errors.New("not exists")
+	if actuator.PipelineRun == nil || actuator.Pipeline == nil {
+		return s.returnWithFailedMessage(err.Error())
 	}
 
 	return &workflowActor.Result{
-		Status: actuator.PipelineRun.Status.Status,
+		Status:  actuator.PipelineRun.Status.Status,
+		Reason:  actuator.PipelineRun.Status.Reason,
+		Message: actuator.PipelineRun.Status.Message,
+		TaskRun: actuator.PipelineRun.Status.TaskRun,
 	}, nil
+}
+
+func (s *Scheduler) Clear(ctx context.Context, req *workflowActor.NamespacedName) error {
+	name := fmt.Sprintf("%s:%s", req.Namespace, req.Name)
+
+	level.Info(s.logger).Log("message", "Try to clear", "name", name)
+	if exist, err := s.GetStateManager().Contains(s.getStateName(name)); err != nil {
+		level.Info(s.logger).Log("message", err.Error())
+		return nil
+	} else if exist {
+		return nil
+	}
+
+	err := s.GetStateManager().Remove(s.getStateName(name))
+	if err != nil {
+		level.Info(s.logger).Log("message", err.Error())
+		return nil
+	}
+
+	err = s.saveAndFlush()
+	if err != nil {
+		level.Info(s.logger).Log("message", err.Error())
+		return nil
+	}
+
+	level.Info(s.logger).Log("message", "Clear success", "name", name)
+	return nil
 }
 
 func (s *Scheduler) ReminderCall(reminderName string, state []byte, dueTime string, period string) {
@@ -186,6 +212,11 @@ func (s *Scheduler) Reconcile(ctx context.Context, actuator *Actuator) bool {
 	err := actuator.Reconcile(ctx)
 	if err != nil {
 		level.Error(s.logger).Log("message", err.Error())
+		reason := v1alpha1.SchedulerFail
+		actuator.PipelineRun.Status.Reason = &reason
+		actuator.PipelineRun.Status.Message = err.Error()
+		actuator.PipelineRun.Status.Status = corev1.ConditionFalse
+
 		return true
 	}
 
@@ -209,4 +240,14 @@ func (s *Scheduler) saveAndFlush() error {
 	}
 	s.GetStateManager().Flush()
 	return nil
+}
+
+func (s *Scheduler) returnWithFailedMessage(message string) (*workflowActor.Result, error) {
+	level.Info(s.logger).Log("message", message)
+	reason := v1alpha1.SchedulerFail
+	return &workflowActor.Result{
+		Status:  corev1.ConditionFalse,
+		Reason:  &reason,
+		Message: message,
+	}, nil
 }
