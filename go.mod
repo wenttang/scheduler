@@ -2,12 +2,15 @@ module github.com/wenttang/scheduler
 
 go 1.18
 
+replace github.com/wenttang/workflow => ./../../workflow
+
 require (
 	github.com/dapr/go-sdk v1.5.0
-	github.com/go-kit/log v0.2.0
+	github.com/go-kit/log v0.2.1
+	github.com/kelseyhightower/envconfig v1.4.0
 	github.com/wenttang/workflow v0.0.0-00010101000000-000000000000
-	k8s.io/api v0.24.2
-	k8s.io/apimachinery v0.24.2
+	k8s.io/api v0.24.3
+	k8s.io/apimachinery v0.24.3
 )
 
 require (
@@ -37,5 +40,3 @@ require (
 	sigs.k8s.io/json v0.0.0-20211208200746-9f7c6b3444d2 // indirect
 	sigs.k8s.io/structured-merge-diff/v4 v4.2.1 // indirect
 )
-
-replace github.com/wenttang/workflow => ./../../workflow

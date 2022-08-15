@@ -8,7 +8,9 @@ import (
 	dapr "github.com/dapr/go-sdk/client"
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
+	"github.com/wenttang/scheduler/internal/config"
 	schedulerActor "github.com/wenttang/scheduler/pkg/actor"
+	"github.com/wenttang/scheduler/pkg/middleware"
 	workflowActor "github.com/wenttang/workflow/pkg/actor"
 	"github.com/wenttang/workflow/pkg/apis/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
@@ -16,22 +18,27 @@ import (
 
 type Scheduler struct {
 	actor.ServerImplBase
-	daprClient dapr.Client
+	conf       *config.Config
+	middleware *middleware.Chain
 
-	actorSet *ActorSet
-	logger   log.Logger
+	daprClient dapr.Client
+	actorSet   *ActorSet
+	logger     log.Logger
 }
 
-func New(logger log.Logger, darpClient dapr.Client) func() actor.Server {
+func New(conf config.Config, logger log.Logger, daprClient dapr.Client) func() actor.Server {
 	logger = log.With(logger, "Module", "Scheduler")
+
 	return func() actor.Server {
 		return &Scheduler{
+			conf: &conf,
 			actorSet: &ActorSet{
 				actors: make(map[string]*schedulerActor.ClientStub),
-				dapr:   darpClient,
+				dapr:   daprClient,
 			},
-			daprClient: darpClient,
+			daprClient: daprClient,
 			logger:     logger,
+			middleware: middleware.New(daprClient, logger, conf.Middleware.Pre, conf.Middleware.Post),
 		}
 	}
 }
@@ -177,7 +184,15 @@ func (s *Scheduler) reminderCall(ctx context.Context, name string) error {
 
 	actuator.logger = log.With(s.logger, "name", name)
 	actuator.ActorSet = s.actorSet
+
+	mwReq := &middleware.DoReq{
+		Pipeline:    actuator.Pipeline,
+		PipelineRun: actuator.PipelineRun,
+	}
+	s.middleware.Pre(ctx, mwReq)
+	defer s.middleware.Post(ctx, mwReq)
 	isDone := s.Reconcile(ctx, actuator)
+
 	if isDone {
 		err := stopReminder(s, actuator)
 		if err != nil {
@@ -221,7 +236,7 @@ func (s *Scheduler) Reconcile(ctx context.Context, actuator *Actuator) bool {
 	}
 
 	if actuator.PipelineRun.Status.IsFinish() {
-		level.Info(s.logger).Log("message", "All task finish or some task fialed")
+		level.Info(s.logger).Log("message", "All task finish or some task failed")
 		return true
 	}
 

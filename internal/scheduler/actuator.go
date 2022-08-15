@@ -97,25 +97,22 @@ func (a *Actuator) getTask() *task {
 	l := len(a.PipelineRun.Status.TaskRun)
 	if l == 0 {
 		a.PipelineRun.Status.TaskRun = []*v1alpha1.TaskStatus{{}}
-		return &task{
-			task:    a.Pipeline.Spec.Tasks[0],
-			taskRun: a.PipelineRun.Status.TaskRun[0],
+	} else {
+		l--
+		taskRun := a.PipelineRun.Status.TaskRun[l]
+		if *taskRun.Status == corev1.ConditionFalse ||
+			*taskRun.Status == corev1.ConditionTrue {
+			l += 1
+			a.PipelineRun.Status.TaskRun = append(a.PipelineRun.Status.TaskRun, &v1alpha1.TaskStatus{})
+		}
+
+		if l == len(a.Pipeline.Spec.Tasks) {
+			// All task has finish.
+			return nil
 		}
 	}
 
-	l--
-	taskRun := a.PipelineRun.Status.TaskRun[l]
-	if *taskRun.Status == corev1.ConditionFalse ||
-		*taskRun.Status == corev1.ConditionTrue {
-		l += 1
-		a.PipelineRun.Status.TaskRun = append(a.PipelineRun.Status.TaskRun, &v1alpha1.TaskStatus{})
-	}
-
-	if l == len(a.Pipeline.Spec.Tasks) {
-		// All task has finish.
-		return nil
-	}
-
+	a.PipelineRun.Status.TaskRun[l].Name = a.Pipeline.Spec.Tasks[l].Name
 	return &task{
 		task:    a.Pipeline.Spec.Tasks[l],
 		taskRun: a.PipelineRun.Status.TaskRun[l],
