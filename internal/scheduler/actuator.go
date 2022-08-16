@@ -33,7 +33,12 @@ func (a *Actuator) Reconcile(ctx context.Context) error {
 	if !task.isStarted() {
 		now := metav1.Now()
 		task.taskRun.StartTime = &now
-		task.parseParams(a.PipelineRun.Spec.Params)
+		err := task.parseParams(a.PipelineRun.Spec.Params)
+		if err != nil {
+			state := corev1.ConditionFalse
+			task.taskRun.Status = &state
+			return err
+		}
 		state := corev1.ConditionUnknown
 		task.taskRun.Status = &state
 	}
@@ -61,11 +66,12 @@ func (a *Actuator) Reconcile(ctx context.Context) error {
 	}
 
 	task.taskRun.Status = &state
+	task.taskRun.Output = resp.OutPut
 	return nil
 }
 
 func (a *Actuator) ParseParams() error {
-	var getParams = func(params []v1alpha1.Param, name string) *v1alpha1.Param {
+	var getParams = func(params []v1alpha1.KeyAndValue, name string) *v1alpha1.KeyAndValue {
 		for _, param := range params {
 			if param.Name == name {
 				return &param
@@ -74,14 +80,14 @@ func (a *Actuator) ParseParams() error {
 		return nil
 	}
 
-	result := make([]v1alpha1.Param, 0, len(a.Pipeline.Spec.Params))
+	result := make([]v1alpha1.KeyAndValue, 0, len(a.Pipeline.Spec.Params))
 	for _, paramSpec := range a.Pipeline.Spec.Params {
 		param := getParams(a.PipelineRun.Spec.Params, paramSpec.Name)
 		if param == nil {
 			if paramSpec.Default == nil {
 				return fmt.Errorf("%s is required", param.Name)
 			}
-			param = &v1alpha1.Param{
+			param = &v1alpha1.KeyAndValue{
 				Name:  paramSpec.Name,
 				Value: paramSpec.Default,
 			}
@@ -96,40 +102,52 @@ func (a *Actuator) ParseParams() error {
 func (a *Actuator) getTask() *task {
 	l := len(a.PipelineRun.Status.TaskRun)
 	if l == 0 {
-		a.PipelineRun.Status.TaskRun = []*v1alpha1.TaskStatus{{}}
+		state := corev1.ConditionUnknown
+		a.PipelineRun.Status.TaskRun = []*v1alpha1.TaskStatus{{
+			Name:   a.Pipeline.Spec.Tasks[l].Name,
+			Status: &state,
+		}}
 	} else {
 		l--
 		taskRun := a.PipelineRun.Status.TaskRun[l]
 		if *taskRun.Status == corev1.ConditionFalse ||
 			*taskRun.Status == corev1.ConditionTrue {
 			l += 1
-			a.PipelineRun.Status.TaskRun = append(a.PipelineRun.Status.TaskRun, &v1alpha1.TaskStatus{})
+			if l == len(a.Pipeline.Spec.Tasks) {
+				// All task has finish.
+				return nil
+			}
+			state := corev1.ConditionUnknown
+			a.PipelineRun.Status.TaskRun = append(a.PipelineRun.Status.TaskRun, &v1alpha1.TaskStatus{
+				Name:   a.Pipeline.Spec.Tasks[l].Name,
+				Status: &state,
+			})
 		}
 
-		if l == len(a.Pipeline.Spec.Tasks) {
-			// All task has finish.
-			return nil
-		}
 	}
 
 	a.PipelineRun.Status.TaskRun[l].Name = a.Pipeline.Spec.Tasks[l].Name
 	return &task{
 		task:    a.Pipeline.Spec.Tasks[l],
 		taskRun: a.PipelineRun.Status.TaskRun[l],
+
+		pipelineRunStatus: &a.PipelineRun.Status,
 	}
 }
 
 type task struct {
 	task    v1alpha1.Task
 	taskRun *v1alpha1.TaskStatus
+
+	pipelineRunStatus *v1alpha1.PipeplineRunStatus
 }
 
 func (t *task) isStarted() bool {
 	return t.taskRun.Status != nil && *t.taskRun.Status != ""
 }
 
-func (t *task) parseParams(params []v1alpha1.Param) error {
-	var getValue = func(params []v1alpha1.Param, name string) *string {
+func (t *task) parseParams(params []v1alpha1.KeyAndValue) error {
+	var getValue = func(params []v1alpha1.KeyAndValue, name string) *string {
 		for _, param := range params {
 			if param.Name == name {
 				return param.Value
@@ -138,18 +156,37 @@ func (t *task) parseParams(params []v1alpha1.Param) error {
 		return nil
 	}
 
-	for i, param := range t.task.Params {
-		if !strings.HasPrefix(*param.Value, "$(params.") {
-			continue
+	var getOutputValue = func(taskStatus []*v1alpha1.TaskStatus, name string) *string {
+		names := strings.Split(name, ".")
+		if len(names) != 2 {
+			return nil
+		}
+		for _, taskState := range taskStatus {
+			if taskState.Name == names[0] {
+				return getValue(taskState.Output, names[1])
+			}
 		}
 
-		name := (*param.Value)[9:]
-		name = name[:len(name)-1]
-		value := getValue(params, name)
-		if value == nil {
+		return nil
+	}
+
+	for i, param := range t.task.Params {
+		switch {
+		case strings.HasPrefix(*param.Value, "$(params."):
+			name := (*param.Value)[9:]
+			name = name[:len(name)-1]
+			value := getValue(params, name)
+			t.task.Params[i].Value = value
+		case strings.HasPrefix(*param.Value, "$(task."):
+			name := (*param.Value)[7:]
+			name = name[:len(name)-1]
+			value := getOutputValue(t.pipelineRunStatus.TaskRun, name)
+			t.task.Params[i].Value = value
+		}
+
+		if t.task.Params[i].Value == nil {
 			return fmt.Errorf("can not get the value of %s", *param.Value)
 		}
-		t.task.Params[i].Value = value
 	}
 	return nil
 }

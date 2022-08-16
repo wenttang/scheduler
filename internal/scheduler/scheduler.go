@@ -94,7 +94,9 @@ func (s *Scheduler) Register(ctx context.Context, req *workflowActor.RegisterReq
 	}
 
 	level.Info(s.logger).Log("message", "Success", "name", name)
-	return &workflowActor.Result{}, nil
+	return &workflowActor.Result{
+		Status: corev1.ConditionUnknown,
+	}, nil
 }
 
 func (s *Scheduler) GetStatus(ctx context.Context, req *workflowActor.NamespacedName) (*workflowActor.Result, error) {

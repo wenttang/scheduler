@@ -16,11 +16,13 @@ const (
 )
 
 type ReconcileTaskReq struct {
-	Params []v1alpha1.Param
+	Params []v1alpha1.KeyAndValue
 }
 type ReconcileTaskResp struct {
 	Status  Status
 	Message string
+
+	OutPut []v1alpha1.KeyAndValue
 }
 
 type ClientStub struct {
