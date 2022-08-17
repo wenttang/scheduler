@@ -9,7 +9,8 @@ import (
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
 	"github.com/wenttang/scheduler/internal/config"
-	schedulerActor "github.com/wenttang/scheduler/pkg/actor"
+	"github.com/wenttang/scheduler/internal/scheduler/runtime"
+	taskRuntime "github.com/wenttang/scheduler/internal/scheduler/runtime/task"
 	"github.com/wenttang/scheduler/pkg/middleware"
 	workflowActor "github.com/wenttang/workflow/pkg/actor"
 	"github.com/wenttang/workflow/pkg/apis/v1alpha1"
@@ -21,9 +22,9 @@ type Scheduler struct {
 	conf       *config.Config
 	middleware *middleware.Chain
 
-	daprClient dapr.Client
-	actorSet   *ActorSet
-	logger     log.Logger
+	taskRunTime runtime.Runtime
+	daprClient  dapr.Client
+	logger      log.Logger
 }
 
 func New(conf config.Config, logger log.Logger, daprClient dapr.Client) func() actor.Server {
@@ -32,13 +33,12 @@ func New(conf config.Config, logger log.Logger, daprClient dapr.Client) func() a
 	return func() actor.Server {
 		return &Scheduler{
 			conf: &conf,
-			actorSet: &ActorSet{
-				actors: make(map[string]*schedulerActor.ClientStub),
-				dapr:   daprClient,
-			},
+
 			daprClient: daprClient,
 			logger:     logger,
 			middleware: middleware.New(daprClient, logger, conf.Middleware.Pre, conf.Middleware.Post),
+
+			taskRunTime: taskRuntime.New(daprClient),
 		}
 	}
 }
@@ -185,7 +185,7 @@ func (s *Scheduler) reminderCall(ctx context.Context, name string) error {
 	}
 
 	actuator.logger = log.With(s.logger, "name", name)
-	actuator.ActorSet = s.actorSet
+	actuator.taskRunTime = s.taskRunTime
 
 	mwReq := &middleware.DoReq{
 		Pipeline:    actuator.Pipeline,
@@ -196,6 +196,7 @@ func (s *Scheduler) reminderCall(ctx context.Context, name string) error {
 	isDone := s.Reconcile(ctx, actuator)
 
 	if isDone {
+		actuator.getTask()
 		err := stopReminder(s, actuator)
 		if err != nil {
 			level.Error(s.logger).Log("message", "Failed stop reminder")

@@ -6,21 +6,19 @@ import (
 	"strings"
 
 	"github.com/go-kit/log"
-	"github.com/go-kit/log/level"
-	schedulerActor "github.com/wenttang/scheduler/pkg/actor"
+	"github.com/wenttang/scheduler/internal/scheduler/runtime"
 	"github.com/wenttang/workflow/pkg/apis/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 type Actuator struct {
-	*ActorSet
-
 	Name        string
 	Pipeline    *v1alpha1.Pipepline    `json:"pipeline,omitempty"`
 	PipelineRun *v1alpha1.PipeplineRun `json:"pipeline_run,omitempty"`
 
-	logger log.Logger
+	taskRunTime runtime.Runtime
+	logger      log.Logger
 }
 
 func (a *Actuator) Reconcile(ctx context.Context) error {
@@ -39,35 +37,9 @@ func (a *Actuator) Reconcile(ctx context.Context) error {
 			task.taskRun.Status = &state
 			return err
 		}
-		state := corev1.ConditionUnknown
-		task.taskRun.Status = &state
 	}
 
-	actor := a.getActor(task.task.Actor.Type)
-
-	resp, err := actor.ReconcileTask(ctx, &schedulerActor.ReconcileTaskReq{
-		Params: task.task.Params,
-	})
-	if err != nil {
-		level.Error(a.logger).Log("message", err.Error())
-		return err
-	}
-
-	var state corev1.ConditionStatus
-	switch resp.Status {
-	case schedulerActor.Running:
-		state = corev1.ConditionUnknown
-	case schedulerActor.True:
-		state = corev1.ConditionTrue
-		now := metav1.Now()
-		task.taskRun.CompletionTime = &now
-	default:
-		state = corev1.ConditionFalse
-	}
-
-	task.taskRun.Status = &state
-	task.taskRun.Output = resp.OutPut
-	return nil
+	return a.taskRunTime.Exec(ctx, task.task, task.taskRun)
 }
 
 func (a *Actuator) ParseParams() error {
@@ -99,17 +71,18 @@ func (a *Actuator) ParseParams() error {
 	return nil
 }
 
-func (a *Actuator) getTask() *task {
+func (a *Actuator) getTask() *taskSet {
 	l := len(a.PipelineRun.Status.TaskRun)
 	if l == 0 {
-		state := corev1.ConditionUnknown
 		a.PipelineRun.Status.TaskRun = []*v1alpha1.TaskStatus{{
-			Name:   a.Pipeline.Spec.Tasks[l].Name,
-			Status: &state,
+			Name: a.Pipeline.Spec.Tasks[l].Name,
 		}}
 	} else {
 		l--
 		taskRun := a.PipelineRun.Status.TaskRun[l]
+		if taskRun.Status == nil {
+			return nil
+		}
 		if *taskRun.Status == corev1.ConditionFalse ||
 			*taskRun.Status == corev1.ConditionTrue {
 			l += 1
@@ -117,36 +90,61 @@ func (a *Actuator) getTask() *task {
 				// All task has finish.
 				return nil
 			}
-			state := corev1.ConditionUnknown
 			a.PipelineRun.Status.TaskRun = append(a.PipelineRun.Status.TaskRun, &v1alpha1.TaskStatus{
-				Name:   a.Pipeline.Spec.Tasks[l].Name,
-				Status: &state,
+				Name: a.Pipeline.Spec.Tasks[l].Name,
 			})
 		}
-
 	}
 
-	a.PipelineRun.Status.TaskRun[l].Name = a.Pipeline.Spec.Tasks[l].Name
-	return &task{
-		task:    a.Pipeline.Spec.Tasks[l],
-		taskRun: a.PipelineRun.Status.TaskRun[l],
+	task := a.Pipeline.Spec.Tasks[l]
+	taskRun := a.PipelineRun.Status.TaskRun[l]
+	if a.shouldSkip(&task) {
+		state := corev1.ConditionTrue
+		taskRun.Status = &state
+		taskRun.Message = "Skip"
+		return a.getTask()
+	}
 
+	return &taskSet{
+		task:              task,
+		taskRun:           taskRun,
 		pipelineRunStatus: &a.PipelineRun.Status,
 	}
 }
 
-type task struct {
+func (a *Actuator) shouldSkip(task *v1alpha1.Task) bool {
+	var lookup = func(dependency string) bool {
+		for _, elem := range a.PipelineRun.Status.TaskRun {
+			if elem.Name == dependency {
+				if elem.StartTime != nil {
+					return true
+				}
+				break
+			}
+		}
+		return false
+	}
+
+	for _, dependency := range task.Dependencies {
+		if !lookup(dependency) {
+			return true
+		}
+	}
+	return false
+}
+
+type taskSet struct {
 	task    v1alpha1.Task
 	taskRun *v1alpha1.TaskStatus
 
 	pipelineRunStatus *v1alpha1.PipeplineRunStatus
 }
 
-func (t *task) isStarted() bool {
+func (t *taskSet) isStarted() bool {
 	return t.taskRun.Status != nil && *t.taskRun.Status != ""
 }
 
-func (t *task) parseParams(params []v1alpha1.KeyAndValue) error {
+func (t *taskSet) parseParams(params []v1alpha1.KeyAndValue) error {
 	var getValue = func(params []v1alpha1.KeyAndValue, name string) *string {
 		for _, param := range params {
 			if param.Name == name {
