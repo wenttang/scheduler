@@ -31,7 +31,7 @@ func (a *Actuator) Reconcile(ctx context.Context) error {
 	if !task.isStarted() {
 		now := metav1.Now()
 		task.taskRun.StartTime = &now
-		err := task.parseParams(a.PipelineRun.Spec.Params)
+		err := task.parseParams(task.task.Params, a.PipelineRun.Spec.Params)
 		if err != nil {
 			state := corev1.ConditionFalse
 			task.taskRun.Status = &state
@@ -98,21 +98,24 @@ func (a *Actuator) getTask() *taskSet {
 
 	task := a.Pipeline.Spec.Tasks[l]
 	taskRun := a.PipelineRun.Status.TaskRun[l]
-	if a.shouldSkip(&task) {
+
+	taskSet := &taskSet{
+		task:              task,
+		taskRun:           taskRun,
+		pipelineRunStatus: &a.PipelineRun.Status,
+	}
+
+	if a.shouldSkip(taskSet) {
 		state := corev1.ConditionTrue
 		taskRun.Status = &state
 		taskRun.Message = "Skip"
 		return a.getTask()
 	}
 
-	return &taskSet{
-		task:              task,
-		taskRun:           taskRun,
-		pipelineRunStatus: &a.PipelineRun.Status,
-	}
+	return taskSet
 }
 
-func (a *Actuator) shouldSkip(task *v1alpha1.Task) bool {
+func (a *Actuator) shouldSkip(task *taskSet) bool {
 	var lookup = func(dependency string) bool {
 		for _, elem := range a.PipelineRun.Status.TaskRun {
 			if elem.Name == dependency {
@@ -125,12 +128,45 @@ func (a *Actuator) shouldSkip(task *v1alpha1.Task) bool {
 		return false
 	}
 
-	for _, dependency := range task.Dependencies {
+	for _, dependency := range task.task.Dependencies {
 		if !lookup(dependency) {
 			return true
 		}
 	}
+
+	if len(task.task.When) != 0 {
+		return a.shouldSkipByWhen(task)
+	}
+
 	return false
+}
+
+func (a *Actuator) shouldSkipByWhen(task *taskSet) bool {
+	for i, when := range task.task.When {
+		var parseString = func(str string) string {
+			if !strings.HasPrefix(str, "$(") {
+				return str
+			}
+
+			tmp := []v1alpha1.KeyAndValue{{
+				Value: &str,
+			}}
+			task.parseParams(tmp, a.PipelineRun.Spec.Params)
+
+			if tmp[0].Value != nil {
+				return *tmp[0].Value
+			}
+			return ""
+		}
+
+		task.task.When[i].Input = parseString(when.Input)
+		for i, value := range when.Values {
+			task.task.When[i].Values[i] = parseString(value)
+		}
+	}
+
+	var w when = task.task.When
+	return w.sholdSkip()
 }
 
 type taskSet struct {
@@ -144,7 +180,7 @@ func (t *taskSet) isStarted() bool {
 	return t.taskRun.Status != nil && *t.taskRun.Status != ""
 }
 
-func (t *taskSet) parseParams(params []v1alpha1.KeyAndValue) error {
+func (t *taskSet) parseParams(dst, src []v1alpha1.KeyAndValue) error {
 	var getValue = func(params []v1alpha1.KeyAndValue, name string) *string {
 		for _, param := range params {
 			if param.Name == name {
@@ -168,23 +204,48 @@ func (t *taskSet) parseParams(params []v1alpha1.KeyAndValue) error {
 		return nil
 	}
 
-	for i, param := range t.task.Params {
+	for i, param := range dst {
 		switch {
 		case strings.HasPrefix(*param.Value, "$(params."):
 			name := (*param.Value)[9:]
 			name = name[:len(name)-1]
-			value := getValue(params, name)
-			t.task.Params[i].Value = value
+			value := getValue(src, name)
+			dst[i].Value = value
 		case strings.HasPrefix(*param.Value, "$(task."):
 			name := (*param.Value)[7:]
 			name = name[:len(name)-1]
 			value := getOutputValue(t.pipelineRunStatus.TaskRun, name)
-			t.task.Params[i].Value = value
+			dst[i].Value = value
 		}
 
-		if t.task.Params[i].Value == nil {
+		if dst[i].Value == nil {
 			return fmt.Errorf("can not get the value of %s", *param.Value)
 		}
 	}
 	return nil
+}
+
+type when []v1alpha1.When
+
+// TODO:
+func (w when) sholdSkip() bool {
+	for _, elem := range w {
+		switch elem.Operator {
+		case "in":
+			var in = func(elem string, src []string) bool {
+				for _, value := range src {
+					if value == elem {
+						return true
+					}
+				}
+				return false
+			}
+
+			if !in(elem.Input, elem.Values) {
+				return true
+			}
+		}
+	}
+
+	return false
 }
