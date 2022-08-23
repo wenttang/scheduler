@@ -142,26 +142,27 @@ func (a *Actuator) shouldSkip(task *taskSet) bool {
 }
 
 func (a *Actuator) shouldSkipByWhen(task *taskSet) bool {
-	for i, when := range task.task.When {
-		var parseString = func(str string) string {
-			if !strings.HasPrefix(str, "$(") {
-				return str
-			}
-
-			tmp := []v1alpha1.KeyAndValue{{
-				Value: &str,
-			}}
-			task.parseParams(tmp, a.PipelineRun.Spec.Params)
-
-			if tmp[0].Value != nil {
-				return *tmp[0].Value
-			}
-			return ""
+	var parseValue = func(anyString *v1alpha1.AnyString) *v1alpha1.AnyString {
+		key := anyString.String()
+		if !strings.HasPrefix(key, "$(") {
+			return anyString
 		}
 
-		task.task.When[i].Input = parseString(when.Input)
+		tmp := []v1alpha1.KeyAndValue{{
+			Value: anyString,
+		}}
+		task.parseParams(tmp, a.PipelineRun.Spec.Params)
+
+		if tmp[0].Value != nil {
+			return tmp[0].Value
+		}
+		return anyString
+	}
+
+	for i, when := range task.task.When {
+		task.task.When[i].Input = parseValue(when.Input)
 		for i, value := range when.Values {
-			task.task.When[i].Values[i] = parseString(value)
+			task.task.When[i].Values[i] = parseValue(value)
 		}
 	}
 
@@ -181,7 +182,7 @@ func (t *taskSet) isStarted() bool {
 }
 
 func (t *taskSet) parseParams(dst, src []v1alpha1.KeyAndValue) error {
-	var getValue = func(params []v1alpha1.KeyAndValue, name string) *string {
+	var getValue = func(params []v1alpha1.KeyAndValue, name string) *v1alpha1.AnyString {
 		for _, param := range params {
 			if param.Name == name {
 				return param.Value
@@ -190,7 +191,7 @@ func (t *taskSet) parseParams(dst, src []v1alpha1.KeyAndValue) error {
 		return nil
 	}
 
-	var getOutputValue = func(taskStatus []*v1alpha1.TaskStatus, name string) *string {
+	var getOutputValue = func(taskStatus []*v1alpha1.TaskStatus, name string) *v1alpha1.AnyString {
 		names := strings.Split(name, ".")
 		if len(names) != 2 {
 			return nil
@@ -205,17 +206,16 @@ func (t *taskSet) parseParams(dst, src []v1alpha1.KeyAndValue) error {
 	}
 
 	for i, param := range dst {
+		name := param.Value.String()
 		switch {
-		case strings.HasPrefix(*param.Value, "$(params."):
-			name := (*param.Value)[9:]
+		case strings.HasPrefix(name, "$(params."):
+			name = name[9:]
 			name = name[:len(name)-1]
-			value := getValue(src, name)
-			dst[i].Value = value
-		case strings.HasPrefix(*param.Value, "$(task."):
-			name := (*param.Value)[7:]
+			dst[i].Value = getValue(src, name)
+		case strings.HasPrefix(name, "$(task."):
+			name = name[7:]
 			name = name[:len(name)-1]
-			value := getOutputValue(t.pipelineRunStatus.TaskRun, name)
-			dst[i].Value = value
+			dst[i].Value = getOutputValue(t.pipelineRunStatus.TaskRun, name)
 		}
 
 		if dst[i].Value == nil {
@@ -232,9 +232,10 @@ func (w when) sholdSkip() bool {
 	for _, elem := range w {
 		switch elem.Operator {
 		case "in":
-			var in = func(elem string, src []string) bool {
+			var in = func(elem *v1alpha1.AnyString, src []*v1alpha1.AnyString) bool {
 				for _, value := range src {
-					if value == elem {
+					fmt.Println(value.String())
+					if value.String() == elem.String() {
 						return true
 					}
 				}

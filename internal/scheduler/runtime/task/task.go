@@ -57,9 +57,11 @@ func (t *Task) Exec(ctx context.Context, task v1alpha1.Task, status *v1alpha1.Ta
 	status.Status = &state
 
 	actor := t.getActor(task.Actor.Type)
-	resp, err := actor.ReconcileTask(ctx, &schedulerActor.ReconcileTaskReq{
-		Params: task.Params,
-	})
+	params := make(map[string]interface{})
+	for _, param := range task.Params {
+		params[param.Name] = param.Value.GetValue()
+	}
+	resp, err := actor.ReconcileTask(ctx, params)
 
 	if err != nil {
 		return err
