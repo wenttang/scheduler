@@ -22,26 +22,60 @@ type Actuator struct {
 }
 
 func (a *Actuator) Reconcile(ctx context.Context) error {
-	task := a.getTask()
-	if task == nil {
+	taskSet := a.getTask()
+	if taskSet == nil {
 		a.PipelineRun.Status.Status = corev1.ConditionTrue
 		return nil
 	}
 
-	if !task.isStarted() {
-		now := metav1.Now()
-		task.taskRun.StartTime = &now
-		err := task.parseParams(task.task.Params, a.PipelineRun.Spec.Params)
+	if taskSet.canReentrancy() {
+		err := a.parseTaskParams(taskSet)
 		if err != nil {
 			state := corev1.ConditionFalse
-			task.taskRun.Status = &state
+			taskSet.taskRun.Status = &state
+			return err
+		}
+
+		if !taskSet.isStarted() {
+			startTime := metav1.Now()
+			state := corev1.ConditionUnknown
+			taskSet.taskRun.StartTime = &startTime
+			taskSet.taskRun.Status = &state
+		}
+	}
+
+	return a.taskRunTime.Exec(ctx, taskSet.task, taskSet.taskRun)
+}
+
+func (a *Actuator) parseTaskParams(task *taskSet) error {
+	if task.task.WithItems != nil {
+		anyString := v1alpha1.AnyString(*task.task.WithItems)
+		tmp := []v1alpha1.KeyAndValue{{
+			Value: &anyString,
+		}}
+		err := task.parseParams(tmp, a.PipelineRun.Spec.Params)
+		if err != nil {
+			return err
+		}
+
+		task.taskRun.Items = tmp[0].Value
+
+		// items must be slice
+		_, err = task.taskRun.Items.GetSlice()
+		if err != nil {
 			return err
 		}
 	}
 
-	return a.taskRunTime.Exec(ctx, task.task, task.taskRun)
+	err := task.parseParams(task.task.Params, a.PipelineRun.Spec.Params)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
+// ParseParams is parse pipeline params from pipelinerun.
 func (a *Actuator) ParseParams() error {
 	var getParams = func(params []v1alpha1.KeyAndValue, name string) *v1alpha1.KeyAndValue {
 		for _, param := range params {
@@ -71,48 +105,86 @@ func (a *Actuator) ParseParams() error {
 	return nil
 }
 
+// getTask returns the task being executed or the task that is about to be executed.
 func (a *Actuator) getTask() *taskSet {
-	l := len(a.PipelineRun.Status.TaskRun)
-	if l == 0 {
-		a.PipelineRun.Status.TaskRun = []*v1alpha1.TaskStatus{{
-			Name: a.Pipeline.Spec.Tasks[l].Name,
-		}}
+	var taskSet = &taskSet{}
+	if len(a.PipelineRun.Status.TaskRun) == 0 ||
+		*a.PipelineRun.Status.TaskRun[len(a.PipelineRun.Status.TaskRun)-1].Status == corev1.ConditionFalse ||
+		*a.PipelineRun.Status.TaskRun[len(a.PipelineRun.Status.TaskRun)-1].Status == corev1.ConditionTrue {
+		taskSet = a.getNextTask()
 	} else {
-		l--
-		taskRun := a.PipelineRun.Status.TaskRun[l]
-		if taskRun.Status == nil {
-			return nil
-		}
-		if *taskRun.Status == corev1.ConditionFalse ||
-			*taskRun.Status == corev1.ConditionTrue {
-			l += 1
-			if l == len(a.Pipeline.Spec.Tasks) {
-				// All task has finish.
-				return nil
-			}
-			a.PipelineRun.Status.TaskRun = append(a.PipelineRun.Status.TaskRun, &v1alpha1.TaskStatus{
-				Name: a.Pipeline.Spec.Tasks[l].Name,
-			})
-		}
+		l := len(a.PipelineRun.Status.TaskRun) - 1
+		taskSet.task = a.Pipeline.Spec.Tasks[l]
+		taskSet.taskRun = a.PipelineRun.Status.TaskRun[l]
+		taskSet.pipelineRunStatus = &a.PipelineRun.Status
 	}
 
-	task := a.Pipeline.Spec.Tasks[l]
-	taskRun := a.PipelineRun.Status.TaskRun[l]
-
-	taskSet := &taskSet{
-		task:              task,
-		taskRun:           taskRun,
-		pipelineRunStatus: &a.PipelineRun.Status,
+	if taskSet == nil {
+		return nil
 	}
 
-	if a.shouldSkip(taskSet) {
-		state := corev1.ConditionTrue
-		taskRun.Status = &state
-		taskRun.Message = "Skip"
-		return a.getTask()
+	// If there are recurring subtasks,
+	// overwrite the main task with the subtask
+	if taskSet.task.WithItems != nil {
+		a.mutateTask(taskSet)
 	}
 
 	return taskSet
+}
+
+// getNextTask return a new task. It will return nil, if all task has finsh.
+// If task has sub-task, will return sub-task status.
+func (a *Actuator) getNextTask() *taskSet {
+	taskSet := &taskSet{}
+	if len(a.PipelineRun.Status.TaskRun) == 0 {
+		a.PipelineRun.Status.TaskRun = []*v1alpha1.TaskStatus{}
+	}
+
+	l := len(a.PipelineRun.Status.TaskRun)
+	if l == len(a.Pipeline.Spec.Tasks) {
+		// All task has finish.
+		return nil
+	}
+
+	ts := &v1alpha1.TaskStatus{
+		TaskStatusSpec: &v1alpha1.TaskStatusSpec{},
+	}
+	ts.Name = a.Pipeline.Spec.Tasks[l].Name
+	a.PipelineRun.Status.TaskRun = append(a.PipelineRun.Status.TaskRun, ts)
+
+	taskSet.task = a.Pipeline.Spec.Tasks[l]
+	taskSet.taskRun = a.PipelineRun.Status.TaskRun[l]
+	taskSet.pipelineRunStatus = &a.PipelineRun.Status
+
+	if a.shouldSkip(taskSet) {
+		state := corev1.ConditionTrue
+		taskSet.taskRun.Status = &state
+		taskSet.taskRun.Message = "Skip"
+		return a.getNextTask()
+	}
+
+	return taskSet
+}
+
+func (a *Actuator) mutateTask(taskSet *taskSet) {
+	if !taskSet.isStarted() {
+		startTime := metav1.Now()
+		taskSet.taskRun.SubTaskStatus = []v1alpha1.TaskStatusSpec{{
+			StartTime: &startTime,
+		}}
+	}
+
+	lastSubTaskStatus := taskSet.taskRun.SubTaskStatus[len(taskSet.taskRun.SubTaskStatus)-1]
+	if lastSubTaskStatus.Status == nil ||
+		*lastSubTaskStatus.Status == "" ||
+		*lastSubTaskStatus.Status == corev1.ConditionUnknown {
+		return
+	}
+
+	startTime := metav1.Now()
+	taskSet.taskRun.SubTaskStatus = append(taskSet.taskRun.SubTaskStatus, v1alpha1.TaskStatusSpec{
+		StartTime: &startTime,
+	})
 }
 
 func (a *Actuator) shouldSkip(task *taskSet) bool {
@@ -181,6 +253,19 @@ func (t *taskSet) isStarted() bool {
 	return t.taskRun.Status != nil && *t.taskRun.Status != ""
 }
 
+func (t *taskSet) canReentrancy() bool {
+	if !t.isStarted() {
+		return true
+	}
+	for _, sub := range t.taskRun.SubTaskStatus {
+		if sub.Status == nil || *sub.Status == "" {
+			return true
+		}
+	}
+
+	return false
+}
+
 func (t *taskSet) parseParams(dst, src []v1alpha1.KeyAndValue) error {
 	var getValue = func(params []v1alpha1.KeyAndValue, name string) *v1alpha1.AnyString {
 		for _, param := range params {
@@ -216,6 +301,11 @@ func (t *taskSet) parseParams(dst, src []v1alpha1.KeyAndValue) error {
 			name = name[7:]
 			name = name[:len(name)-1]
 			dst[i].Value = getOutputValue(t.pipelineRunStatus.TaskRun, name)
+		case strings.HasPrefix(name, "$(item"):
+			slice, _ := t.taskRun.Items.GetSlice()
+
+			l := len(t.pipelineRunStatus.TaskRun[len(t.pipelineRunStatus.TaskRun)-1].SubTaskStatus) - 1
+			dst[i].Value = v1alpha1.ParseAnyStringPtr(slice[l])
 		}
 
 		if dst[i].Value == nil {
@@ -234,7 +324,6 @@ func (w when) sholdSkip() bool {
 		case "in":
 			var in = func(elem *v1alpha1.AnyString, src []*v1alpha1.AnyString) bool {
 				for _, value := range src {
-					fmt.Println(value.String())
 					if value.String() == elem.String() {
 						return true
 					}

@@ -52,34 +52,67 @@ func New(daprClient dapr.Client) runtime.Runtime {
 	return t
 }
 
-func (t *Task) Exec(ctx context.Context, task v1alpha1.Task, status *v1alpha1.TaskStatus, opts ...runtime.Option) error {
-	state := corev1.ConditionUnknown
-	status.Status = &state
+func (t *Task) Exec(ctx context.Context, task v1alpha1.Task, taskStatus *v1alpha1.TaskStatus, opts ...runtime.Option) error {
+	resp, err := t.exec(ctx, task, taskStatus)
+	if err != nil {
+		return err
+	}
+	taskStatus.Output = resp.OutPut
 
+	state := corev1.ConditionUnknown
+	switch resp.Status {
+	case schedulerActor.Running:
+	case schedulerActor.True:
+		state = corev1.ConditionTrue
+	default:
+		state = corev1.ConditionFalse
+	}
+
+	var subDone bool = true
+	if task.WithItems != nil {
+		subDone, err = t.gatherSubTask(taskStatus, &state)
+	}
+
+	if err != nil {
+		return err
+	}
+
+	if subDone {
+		taskStatus.Status = &state
+		completionTime := metav1.Now()
+		taskStatus.CompletionTime = &completionTime
+	}
+
+	return nil
+}
+
+func (t *Task) gatherSubTask(taskStatus *v1alpha1.TaskStatus, state *corev1.ConditionStatus) (bool, error) {
+	subTask := &taskStatus.SubTaskStatus[len(taskStatus.SubTaskStatus)-1]
+	subTask.Status = state
+	completionTime := metav1.Now()
+
+	if *state == corev1.ConditionFalse ||
+		*state == corev1.ConditionTrue {
+		subTask.CompletionTime = &completionTime
+	}
+
+	slice, err := taskStatus.Items.GetSlice()
+	if err != nil {
+		return false, err
+	}
+
+	if len(slice) == len(taskStatus.SubTaskStatus) {
+		return true, nil
+	}
+
+	return false, nil
+}
+
+func (t *Task) exec(ctx context.Context, task v1alpha1.Task, taskStatus *v1alpha1.TaskStatus) (*schedulerActor.ReconcileTaskResp, error) {
 	actor := t.getActor(task.Actor.Type)
 	params := make(map[string]interface{})
 	for _, param := range task.Params {
 		params[param.Name] = param.Value.GetValue()
 	}
-	resp, err := actor.ReconcileTask(ctx, params)
-
-	if err != nil {
-		return err
-	}
-	switch resp.Status {
-	case schedulerActor.Running:
-		state = corev1.ConditionUnknown
-	case schedulerActor.True:
-		now := metav1.Now()
-		state = corev1.ConditionTrue
-		status.CompletionTime = &now
-	default:
-		now := metav1.Now()
-		state = corev1.ConditionFalse
-		status.CompletionTime = &now
-	}
-
-	status.Status = &state
-	status.Output = resp.OutPut
-	return nil
+	return actor.ReconcileTask(ctx, params)
 }

@@ -196,7 +196,6 @@ func (s *Scheduler) reminderCall(ctx context.Context, name string) error {
 	isDone := s.Reconcile(ctx, actuator)
 
 	if isDone {
-		actuator.getTask()
 		err := stopReminder(s, actuator)
 		if err != nil {
 			level.Error(s.logger).Log("message", "Failed stop reminder")
@@ -209,6 +208,11 @@ func (s *Scheduler) reminderCall(ctx context.Context, name string) error {
 }
 
 func (s *Scheduler) Reconcile(ctx context.Context, actuator *Actuator) bool {
+	if actuator.Pipeline == nil || actuator.PipelineRun == nil {
+		level.Info(s.logger).Log("message", "can not get pipeline or pipelineRun")
+		return true
+	}
+
 	defer func(s *Scheduler, actuator *Actuator) {
 		err := s.GetStateManager().Set(s.getStateName(actuator.Name), actuator)
 		if err != nil {
@@ -221,11 +225,9 @@ func (s *Scheduler) Reconcile(ctx context.Context, actuator *Actuator) bool {
 			return
 		}
 	}(s, actuator)
-
-	if actuator.Pipeline == nil || actuator.PipelineRun == nil {
-		level.Info(s.logger).Log("message", "can not get pipeline or pipelineRun")
-		return true
-	}
+	defer func(actuator *Actuator, pipipeline *v1alpha1.Pipepline) {
+		actuator.Pipeline = pipipeline
+	}(actuator, actuator.Pipeline.DeepCopy())
 
 	err := actuator.Reconcile(ctx)
 	if err != nil {
