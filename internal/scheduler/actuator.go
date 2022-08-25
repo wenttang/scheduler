@@ -28,20 +28,18 @@ func (a *Actuator) Reconcile(ctx context.Context) error {
 		return nil
 	}
 
-	if taskSet.canReentrancy() {
-		err := a.parseTaskParams(taskSet)
-		if err != nil {
-			state := corev1.ConditionFalse
-			taskSet.taskRun.Status = &state
-			return err
-		}
+	err := a.parseTaskParams(taskSet)
+	if err != nil {
+		state := corev1.ConditionFalse
+		taskSet.taskRun.Status = &state
+		return err
+	}
 
-		if !taskSet.isStarted() {
-			startTime := metav1.Now()
-			state := corev1.ConditionUnknown
-			taskSet.taskRun.StartTime = &startTime
-			taskSet.taskRun.Status = &state
-		}
+	if !taskSet.isStarted() {
+		startTime := metav1.Now()
+		state := corev1.ConditionUnknown
+		taskSet.taskRun.StartTime = &startTime
+		taskSet.taskRun.Status = &state
 	}
 
 	return a.taskRunTime.Exec(ctx, taskSet.task, taskSet.taskRun)
