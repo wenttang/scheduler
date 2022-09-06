@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"github.com/go-kit/log"
+	"github.com/go-kit/log/level"
+	"github.com/wenttang/scheduler/internal/scheduler/judgment"
 	"github.com/wenttang/scheduler/internal/scheduler/runtime"
 	"github.com/wenttang/workflow/pkg/apis/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
@@ -154,10 +156,18 @@ func (a *Actuator) getNextTask() *taskSet {
 	taskSet.taskRun = a.PipelineRun.Status.TaskRun[l]
 	taskSet.pipelineRunStatus = &a.PipelineRun.Status
 
-	if a.shouldSkip(taskSet) {
+	if ok, err := a.shouldSkip(taskSet); err != nil {
+		state := corev1.ConditionFalse
+		taskSet.taskRun.Status = &state
+		taskSet.taskRun.Message = err.Error()
+
+		level.Error(a.logger).Log("message", err.Error())
+	} else if ok {
 		state := corev1.ConditionTrue
 		taskSet.taskRun.Status = &state
 		taskSet.taskRun.Message = "Skip"
+
+		level.Info(a.logger).Log("message", "Skip", "task", taskSet.task.Name)
 		return a.getNextTask()
 	}
 
@@ -185,7 +195,7 @@ func (a *Actuator) mutateTask(taskSet *taskSet) {
 	})
 }
 
-func (a *Actuator) shouldSkip(task *taskSet) bool {
+func (a *Actuator) shouldSkip(task *taskSet) (bool, error) {
 	var lookup = func(dependency string) bool {
 		for _, elem := range a.PipelineRun.Status.TaskRun {
 			if elem.Name == dependency {
@@ -200,7 +210,7 @@ func (a *Actuator) shouldSkip(task *taskSet) bool {
 
 	for _, dependency := range task.task.Dependencies {
 		if !lookup(dependency) {
-			return true
+			return true, nil
 		}
 	}
 
@@ -208,10 +218,10 @@ func (a *Actuator) shouldSkip(task *taskSet) bool {
 		return a.shouldSkipByWhen(task)
 	}
 
-	return false
+	return false, nil
 }
 
-func (a *Actuator) shouldSkipByWhen(task *taskSet) bool {
+func (a *Actuator) shouldSkipByWhen(task *taskSet) (bool, error) {
 	var parseValue = func(anyString *v1alpha1.AnyString) *v1alpha1.AnyString {
 		key := anyString.String()
 		if !strings.HasPrefix(key, "$(") {
@@ -231,8 +241,8 @@ func (a *Actuator) shouldSkipByWhen(task *taskSet) bool {
 
 	for i, when := range task.task.When {
 		task.task.When[i].Input = parseValue(when.Input)
-		for i, value := range when.Values {
-			task.task.When[i].Values[i] = parseValue(value)
+		for j, value := range when.Values {
+			task.task.When[i].Values[j] = parseValue(value)
 		}
 	}
 
@@ -315,25 +325,16 @@ func (t *taskSet) parseParams(dst, src []v1alpha1.KeyAndValue) error {
 
 type when []v1alpha1.When
 
-// TODO:
-func (w when) sholdSkip() bool {
+func (w when) sholdSkip() (bool, error) {
 	for _, elem := range w {
-		switch elem.Operator {
-		case "in":
-			var in = func(elem *v1alpha1.AnyString, src []*v1alpha1.AnyString) bool {
-				for _, value := range src {
-					if value.String() == elem.String() {
-						return true
-					}
-				}
-				return false
-			}
-
-			if !in(elem.Input, elem.Values) {
-				return true
-			}
+		ok, err := judgment.Adjudication(elem.Operator, elem.Input, elem.Values)
+		if err != nil {
+			return true, err
+		}
+		if !ok {
+			return true, nil
 		}
 	}
 
-	return false
+	return false, nil
 }

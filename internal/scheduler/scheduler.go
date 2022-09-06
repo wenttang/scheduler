@@ -207,9 +207,15 @@ func (s *Scheduler) reminderCall(ctx context.Context, name string) error {
 	return nil
 }
 
-func (s *Scheduler) Reconcile(ctx context.Context, actuator *Actuator) bool {
+func (s *Scheduler) Reconcile(ctx context.Context, actuator *Actuator) (ok bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			level.Error(actuator.logger).Log("message", r)
+			ok = true
+		}
+	}()
 	if actuator.Pipeline == nil || actuator.PipelineRun == nil {
-		level.Info(s.logger).Log("message", "can not get pipeline or pipelineRun")
+		level.Info(actuator.logger).Log("message", "can not get pipeline or pipelineRun")
 		return true
 	}
 
@@ -241,11 +247,11 @@ func (s *Scheduler) Reconcile(ctx context.Context, actuator *Actuator) bool {
 	}
 
 	if actuator.PipelineRun.Status.IsFinish() {
-		level.Info(s.logger).Log("message", "All task finish or some task failed")
+		level.Info(actuator.logger).Log("message", "All task finish or some task failed")
 		return true
 	}
 
-	return false
+	return
 }
 
 func (s *Scheduler) getStateName(name string) string {
