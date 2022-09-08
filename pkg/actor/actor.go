@@ -28,19 +28,27 @@ type NamespacedName struct {
 	Name      string
 }
 
+type Timer struct {
+	DueTime string `json:"due_time,omitempty"`
+	Period  string `json:"period,omitempty"`
+	TTL     string `json:"ttl,omitempty"`
+}
+
 type RegisterReq struct {
+	Timer       `json:",inline"`
 	Pipeline    *v1alpha1.Pipepline    `json:"pipeline,omitempty"`
 	PipelineRun *v1alpha1.PipeplineRun `json:"pipeline_run,omitempty"`
 }
 
 type Req struct {
-	Name string
+	Name string `json:"name,omitempty"`
 }
 
 type Actor struct {
 	Id        string
 	Register  func(context.Context, *RegisterReq) (*Result, error)
 	GetStatus func(context.Context, *NamespacedName) (*Result, error)
+	TimerCall func(context.Context, *Req) error
 }
 
 func (a *Actor) Type() string {

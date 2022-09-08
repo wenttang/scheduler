@@ -46,9 +46,20 @@ func (s *Scheduler) Type() string {
 	return "scheduler"
 }
 
+const (
+	DefaultDueTime = "5s"
+	DefaultPeriod  = "30s"
+)
+
 func (s *Scheduler) Register(ctx context.Context, req *schedulerActor.RegisterReq) (*schedulerActor.Result, error) {
 	if req.Pipeline == nil || req.PipelineRun == nil {
 		return s.returnWithFailedMessage("Failed get pipeline or pipelineRun")
+	}
+	if req.DueTime == "" {
+		req.DueTime = DefaultDueTime
+	}
+	if req.Period == "" {
+		req.Period = DefaultPeriod
 	}
 
 	name := fmt.Sprintf("%s:%s", req.PipelineRun.Namespace, req.PipelineRun.Name)
@@ -80,13 +91,15 @@ func (s *Scheduler) Register(ctx context.Context, req *schedulerActor.RegisterRe
 		return s.returnWithFailedMessage(err.Error())
 	}
 
-	err = s.daprClient.RegisterActorReminder(ctx, &dapr.RegisterActorReminderRequest{
+	err = s.daprClient.RegisterActorTimer(ctx, &dapr.RegisterActorTimerRequest{
 		ActorType: s.Type(),
 		ActorID:   s.ID(),
 		Name:      name,
-		DueTime:   "5s",
-		Period:    "30s",
-		Data:      []byte(name),
+		DueTime:   req.DueTime,
+		Period:    req.Period,
+		TTL:       req.TTL,
+		Data:      []byte(fmt.Sprintf(`{"name":"%s"}`, name)),
+		CallBack:  "TimerCall",
 	})
 	if err != nil {
 		return s.returnWithFailedMessage(err.Error())
@@ -147,17 +160,15 @@ func (s *Scheduler) Clear(ctx context.Context, req *schedulerActor.NamespacedNam
 	return nil
 }
 
-func (s *Scheduler) ReminderCall(reminderName string, state []byte, dueTime string, period string) {
-	name := string(state)
-	level.Info(s.logger).Log("message", "ReminderCall", "name", name)
+func (s *Scheduler) TimerCall(ctx context.Context, req *schedulerActor.Req) error {
+	level.Info(s.logger).Log("message", "TimerCall", "name", req.Name)
 
-	ctx := context.Background()
-	s.reminderCall(ctx, name)
+	return s.timerCall(ctx, req.Name)
 }
 
-func (s *Scheduler) reminderCall(ctx context.Context, name string) error {
+func (s *Scheduler) timerCall(ctx context.Context, name string) error {
 	var stopReminder = func(s *Scheduler, actuator *Actuator) error {
-		err := s.daprClient.UnregisterActorReminder(ctx, &dapr.UnregisterActorReminderRequest{
+		err := s.daprClient.UnregisterActorTimer(ctx, &dapr.UnregisterActorTimerRequest{
 			ActorType: s.Type(),
 			ActorID:   s.ID(),
 			Name:      name,
