@@ -11,10 +11,9 @@ import (
 	"github.com/wenttang/scheduler/internal/config"
 	"github.com/wenttang/scheduler/internal/scheduler/runtime"
 	taskRuntime "github.com/wenttang/scheduler/internal/scheduler/runtime/task"
+	schedulerActor "github.com/wenttang/scheduler/pkg/actor"
+	"github.com/wenttang/scheduler/pkg/apis/v1alpha1"
 	"github.com/wenttang/scheduler/pkg/middleware"
-	workflowActor "github.com/wenttang/workflow/pkg/actor"
-	"github.com/wenttang/workflow/pkg/apis/v1alpha1"
-	corev1 "k8s.io/api/core/v1"
 )
 
 type Scheduler struct {
@@ -47,7 +46,7 @@ func (s *Scheduler) Type() string {
 	return "scheduler"
 }
 
-func (s *Scheduler) Register(ctx context.Context, req *workflowActor.RegisterReq) (*workflowActor.Result, error) {
+func (s *Scheduler) Register(ctx context.Context, req *schedulerActor.RegisterReq) (*schedulerActor.Result, error) {
 	if req.Pipeline == nil || req.PipelineRun == nil {
 		return s.returnWithFailedMessage("Failed get pipeline or pipelineRun")
 	}
@@ -71,7 +70,7 @@ func (s *Scheduler) Register(ctx context.Context, req *workflowActor.RegisterReq
 		return s.returnWithFailedMessage(err.Error())
 	}
 
-	req.PipelineRun.Status.Status = corev1.ConditionUnknown
+	req.PipelineRun.Status.Status = v1alpha1.ConditionUnknown
 	err = s.GetStateManager().Set(s.getStateName(name), actuator)
 	if err != nil {
 		return s.returnWithFailedMessage(err.Error())
@@ -94,12 +93,12 @@ func (s *Scheduler) Register(ctx context.Context, req *workflowActor.RegisterReq
 	}
 
 	level.Info(s.logger).Log("message", "Success", "name", name)
-	return &workflowActor.Result{
-		Status: corev1.ConditionUnknown,
+	return &schedulerActor.Result{
+		Status: v1alpha1.ConditionUnknown,
 	}, nil
 }
 
-func (s *Scheduler) GetStatus(ctx context.Context, req *workflowActor.NamespacedName) (*workflowActor.Result, error) {
+func (s *Scheduler) GetStatus(ctx context.Context, req *schedulerActor.NamespacedName) (*schedulerActor.Result, error) {
 	actuator := new(Actuator)
 	name := fmt.Sprintf("%s:%s", req.Namespace, req.Name)
 
@@ -113,7 +112,7 @@ func (s *Scheduler) GetStatus(ctx context.Context, req *workflowActor.Namespaced
 		return s.returnWithFailedMessage(err.Error())
 	}
 
-	return &workflowActor.Result{
+	return &schedulerActor.Result{
 		Status:  actuator.PipelineRun.Status.Status,
 		Reason:  actuator.PipelineRun.Status.Reason,
 		Message: actuator.PipelineRun.Status.Message,
@@ -121,7 +120,7 @@ func (s *Scheduler) GetStatus(ctx context.Context, req *workflowActor.Namespaced
 	}, nil
 }
 
-func (s *Scheduler) Clear(ctx context.Context, req *workflowActor.NamespacedName) error {
+func (s *Scheduler) Clear(ctx context.Context, req *schedulerActor.NamespacedName) error {
 	name := fmt.Sprintf("%s:%s", req.Namespace, req.Name)
 
 	level.Info(s.logger).Log("message", "Try to clear", "name", name)
@@ -241,7 +240,7 @@ func (s *Scheduler) Reconcile(ctx context.Context, actuator *Actuator) (ok bool)
 		reason := v1alpha1.SchedulerFail
 		actuator.PipelineRun.Status.Reason = &reason
 		actuator.PipelineRun.Status.Message = err.Error()
-		actuator.PipelineRun.Status.Status = corev1.ConditionFalse
+		actuator.PipelineRun.Status.Status = v1alpha1.ConditionFalse
 
 		return true
 	}
@@ -268,11 +267,11 @@ func (s *Scheduler) saveAndFlush() error {
 	return nil
 }
 
-func (s *Scheduler) returnWithFailedMessage(message string) (*workflowActor.Result, error) {
+func (s *Scheduler) returnWithFailedMessage(message string) (*schedulerActor.Result, error) {
 	level.Info(s.logger).Log("message", message)
 	reason := v1alpha1.SchedulerFail
-	return &workflowActor.Result{
-		Status:  corev1.ConditionFalse,
+	return &schedulerActor.Result{
+		Status:  v1alpha1.ConditionFalse,
 		Reason:  &reason,
 		Message: message,
 	}, nil

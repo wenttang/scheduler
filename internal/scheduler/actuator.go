@@ -4,14 +4,13 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
 	"github.com/wenttang/scheduler/internal/scheduler/judgment"
 	"github.com/wenttang/scheduler/internal/scheduler/runtime"
-	"github.com/wenttang/workflow/pkg/apis/v1alpha1"
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"github.com/wenttang/scheduler/pkg/apis/v1alpha1"
 )
 
 type Actuator struct {
@@ -26,20 +25,20 @@ type Actuator struct {
 func (a *Actuator) Reconcile(ctx context.Context) error {
 	taskSet := a.getTask()
 	if taskSet == nil {
-		a.PipelineRun.Status.Status = corev1.ConditionTrue
+		a.PipelineRun.Status.Status = v1alpha1.ConditionTrue
 		return nil
 	}
 
 	err := a.parseTaskParams(taskSet)
 	if err != nil {
-		state := corev1.ConditionFalse
+		state := v1alpha1.ConditionFalse
 		taskSet.taskRun.Status = &state
 		return err
 	}
 
 	if !taskSet.isStarted() {
-		startTime := metav1.Now()
-		state := corev1.ConditionUnknown
+		startTime := time.Now()
+		state := v1alpha1.ConditionUnknown
 		taskSet.taskRun.StartTime = &startTime
 		taskSet.taskRun.Status = &state
 	}
@@ -109,8 +108,8 @@ func (a *Actuator) ParseParams() error {
 func (a *Actuator) getTask() *taskSet {
 	var taskSet = &taskSet{}
 	if len(a.PipelineRun.Status.TaskRun) == 0 ||
-		*a.PipelineRun.Status.TaskRun[len(a.PipelineRun.Status.TaskRun)-1].Status == corev1.ConditionFalse ||
-		*a.PipelineRun.Status.TaskRun[len(a.PipelineRun.Status.TaskRun)-1].Status == corev1.ConditionTrue {
+		*a.PipelineRun.Status.TaskRun[len(a.PipelineRun.Status.TaskRun)-1].Status == v1alpha1.ConditionFalse ||
+		*a.PipelineRun.Status.TaskRun[len(a.PipelineRun.Status.TaskRun)-1].Status == v1alpha1.ConditionTrue {
 		taskSet = a.getNextTask()
 	} else {
 		l := len(a.PipelineRun.Status.TaskRun) - 1
@@ -157,13 +156,13 @@ func (a *Actuator) getNextTask() *taskSet {
 	taskSet.pipelineRunStatus = &a.PipelineRun.Status
 
 	if ok, err := a.shouldSkip(taskSet); err != nil {
-		state := corev1.ConditionFalse
+		state := v1alpha1.ConditionFalse
 		taskSet.taskRun.Status = &state
 		taskSet.taskRun.Message = err.Error()
 
 		level.Error(a.logger).Log("message", err.Error())
 	} else if ok {
-		state := corev1.ConditionTrue
+		state := v1alpha1.ConditionTrue
 		taskSet.taskRun.Status = &state
 		taskSet.taskRun.Message = "Skip"
 
@@ -176,7 +175,7 @@ func (a *Actuator) getNextTask() *taskSet {
 
 func (a *Actuator) mutateTask(taskSet *taskSet) {
 	if !taskSet.isStarted() {
-		startTime := metav1.Now()
+		startTime := time.Now()
 		taskSet.taskRun.SubTaskStatus = []v1alpha1.TaskStatusSpec{{
 			StartTime: &startTime,
 		}}
@@ -185,11 +184,11 @@ func (a *Actuator) mutateTask(taskSet *taskSet) {
 	lastSubTaskStatus := taskSet.taskRun.SubTaskStatus[len(taskSet.taskRun.SubTaskStatus)-1]
 	if lastSubTaskStatus.Status == nil ||
 		*lastSubTaskStatus.Status == "" ||
-		*lastSubTaskStatus.Status == corev1.ConditionUnknown {
+		*lastSubTaskStatus.Status == v1alpha1.ConditionUnknown {
 		return
 	}
 
-	startTime := metav1.Now()
+	startTime := time.Now()
 	taskSet.taskRun.SubTaskStatus = append(taskSet.taskRun.SubTaskStatus, v1alpha1.TaskStatusSpec{
 		StartTime: &startTime,
 	})

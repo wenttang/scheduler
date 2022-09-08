@@ -3,7 +3,7 @@ package runtime
 import (
 	"context"
 
-	"github.com/wenttang/workflow/pkg/apis/v1alpha1"
+	"github.com/wenttang/scheduler/pkg/apis/v1alpha1"
 )
 
 type Option func(Runtime)

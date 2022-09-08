@@ -3,13 +3,12 @@ package runtime
 import (
 	"context"
 	"sync"
+	"time"
 
 	dapr "github.com/dapr/go-sdk/client"
 	"github.com/wenttang/scheduler/internal/scheduler/runtime"
 	schedulerActor "github.com/wenttang/scheduler/pkg/actor"
-	"github.com/wenttang/workflow/pkg/apis/v1alpha1"
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"github.com/wenttang/scheduler/pkg/apis/v1alpha1"
 )
 
 type ActorSet struct {
@@ -59,13 +58,13 @@ func (t *Task) Exec(ctx context.Context, task v1alpha1.Task, taskStatus *v1alpha
 	}
 	taskStatus.Output = resp.OutPut
 
-	state := corev1.ConditionUnknown
+	state := v1alpha1.ConditionUnknown
 	switch resp.Status {
 	case schedulerActor.Running:
 	case schedulerActor.True:
-		state = corev1.ConditionTrue
+		state = v1alpha1.ConditionTrue
 	default:
-		state = corev1.ConditionFalse
+		state = v1alpha1.ConditionFalse
 	}
 
 	var subDone bool = true
@@ -79,20 +78,20 @@ func (t *Task) Exec(ctx context.Context, task v1alpha1.Task, taskStatus *v1alpha
 
 	if subDone {
 		taskStatus.Status = &state
-		completionTime := metav1.Now()
+		completionTime := time.Now()
 		taskStatus.CompletionTime = &completionTime
 	}
 
 	return nil
 }
 
-func (t *Task) gatherSubTask(taskStatus *v1alpha1.TaskStatus, state *corev1.ConditionStatus) (bool, error) {
+func (t *Task) gatherSubTask(taskStatus *v1alpha1.TaskStatus, state *v1alpha1.ConditionStatus) (bool, error) {
 	subTask := &taskStatus.SubTaskStatus[len(taskStatus.SubTaskStatus)-1]
 	subTask.Status = state
-	completionTime := metav1.Now()
+	completionTime := time.Now()
 
-	if *state == corev1.ConditionFalse ||
-		*state == corev1.ConditionTrue {
+	if *state == v1alpha1.ConditionFalse ||
+		*state == v1alpha1.ConditionTrue {
 		subTask.CompletionTime = &completionTime
 	}
 

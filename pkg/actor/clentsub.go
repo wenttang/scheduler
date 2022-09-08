@@ -4,7 +4,7 @@ import (
 	"context"
 
 	dapr "github.com/dapr/go-sdk/client"
-	"github.com/wenttang/workflow/pkg/apis/v1alpha1"
+	"github.com/wenttang/scheduler/pkg/apis/v1alpha1"
 )
 
 type Status string
